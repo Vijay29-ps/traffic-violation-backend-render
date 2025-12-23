@@ -1,35 +1,70 @@
-# Dockerfile - production-ready for Render (binds to $PORT)
-FROM python:3.11-slim
+# ============================================================
+# GPU BASE IMAGE (CUDA 12.3 + cuDNN 9 | Ubuntu 22.04)
+# ============================================================
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
+# ============================================================
+# SYSTEM CONFIG
+# ============================================================
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV CUDA_VISIBLE_DEVICES=all
+
+# ============================================================
+# WORKDIR
+# ============================================================
 WORKDIR /app
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PORT=10000
-
-# Install system deps required by OpenCV/ffmpeg/ultralytics
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
+# ============================================================
+# SYSTEM DEPENDENCIES
+# ============================================================
+RUN apt-get update && apt-get install -y \
+    python3 \
+    python3-pip \
+    git \
+    wget \
+    curl \
     ffmpeg \
     libgl1 \
     libglib2.0-0 \
-    curl \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for caching
+# ============================================================
+# PYTHON SETUP
+# ============================================================
+RUN ln -s /usr/bin/python3 /usr/bin/python
+
+RUN python -m pip install --upgrade pip setuptools wheel
+
+# ============================================================
+# REQUIREMENTS
+# ============================================================
 COPY requirements.txt /app/requirements.txt
 
-RUN python -m pip install --upgrade pip
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy app code
-COPY . /app
+# ============================================================
+# APPLICATION CODE
+# ============================================================
+COPY . /app/
 
-# Create outputs folder (if your app writes outputs)
-RUN mkdir -p /app/outputs
+# ============================================================
+# PYTHON PATH
+# ============================================================
+ENV PYTHONPATH=/app
 
-# Expose port (documentation only — Render uses $PORT)
-EXPOSE 10000
+# ============================================================
+# OPTIONAL: VERIFY GPU VISIBILITY (SAFE)
+# ============================================================
+RUN python - <<EOF
+import torch
+print("Torch:", torch.__version__)
+print("CUDA Available:", torch.cuda.is_available())
+EOF
 
-# Use shell form so $PORT env expands at runtime
-CMD ["sh", "-c", "gunicorn -k uvicorn.workers.UvicornWorker app:app --bind 0.0.0.0:${PORT:-10000} --workers 2 --timeout 120"]
+# ============================================================
+# DEFAULT COMMAND (CELERY WORKER)
+# ============================================================
+CMD ["celery", "-A", "app.app.celery", "worker", "--pool=solo", "--loglevel=info", "--imports=app.tasks"]
